@@ -2,6 +2,7 @@ package ping
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -11,33 +12,59 @@ import (
 )
 
 func TestPingEndpoint(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-	
-	cfg := &config.Config{
-		Requests:    3,
-		Concurrency: 2,
-		Timeout:     1 * time.Second,
-	}
+    // Test HTTP Server
+    httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        w.WriteHeader(http.StatusOK)
+    }))
+    defer httpServer.Close()
 
-	runner := NewRunner(cfg)
-	results := make(chan Result, 3)
+    // Test TCP Server
+    tcpListener, err := net.Listen("tcp", "127.0.0.1:0")
+    if err != nil {
+        t.Fatalf("Failed to start TCP server: %v", err)
+    }
+    defer tcpListener.Close()
+    
+    go func() {
+        for {
+            conn, err := tcpListener.Accept()
+            if err != nil {
+                return
+            }
+            conn.Close()
+        }
+    }()
 
-	go func() {
-		runner.Run(context.Background(), results)
-		close(results)
-	}()
+    cfg := &config.Config{
+        Requests:    5,
+        Concurrency: 2,
+        Timeout:     1 * time.Second,
+        Endpoints: []string{
+            httpServer.URL,          // HTTP test endpoint
+            tcpListener.Addr().String(), // TCP test endpoint
+        },
+    }
 
-	successCount := 0
-	for res := range results {
-		if res.Success {
-			successCount++
-		}
-	}
+    runner := NewRunner(cfg)
+    results := make(chan Result, 10)
 
-	if successCount == 0 {
-		t.Fatal("No successful pings to localhost")
-	}
+    ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+    defer cancel()
+
+    go runner.Run(ctx, results)
+
+    successCount := 0
+    for res := range results {
+        if res.Success {
+            successCount++
+        }
+        if res.Endpoint == httpServer.URL && res.Duration == 0 {
+            t.Error("HTTP request duration not recorded")
+        }
+    }
+
+    expectedSuccess := cfg.Requests * len(cfg.Endpoints)
+    if successCount != expectedSuccess {
+        t.Errorf("Expected %d successes, got %d", expectedSuccess, successCount)
+    }
 }
