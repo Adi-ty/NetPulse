@@ -1,0 +1,11 @@
+.git/
+.DS_Store
+bin/
+*.log
+vendor/
+.env
+*.md
+*.pdf
+*.swp
+*.test
+coverage.txt
